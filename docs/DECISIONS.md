@@ -66,3 +66,35 @@
   and lookups by user or event would slow down as bookings grow.
 - **Timestamps in UTC, set by the database.** `timestamptz` with `now()`, so
   every API instance gets its time from the same source.
+
+## Step 4: Authentication
+
+- **Passwords are hashed with argon2 (pwdlib).** Plain passwords are never stored.
+  Argon2 is deliberately slow and every hash gets its own salt.
+- **Short-lived JWT access tokens (30 minutes), signed with HS256.** The payload
+  holds only the user id (`sub`) and the expiry (`exp`). The role is not in the
+  token: the user is loaded from the database on every request, so a role change
+  applies immediately.
+- **`SECRET_KEY` has no default value.** The app refuses to start without it,
+  instead of running with a guessable key.
+- **Strict token validation.** Decoding pins the allowed algorithm and requires
+  `exp` and `sub`, so a token without an expiry is rejected. Expired, forged and
+  malformed tokens all return the same 401.
+- **No user enumeration on login.** An unknown email and a wrong password return
+  the same 401 message. When the email does not exist, the password is verified
+  against a dummy hash, so both cases take a similar time.
+- **Separate input and output schemas.** `UserCreate` accepts only email and
+  password, so a client cannot choose its own role. `UserRead` has no
+  `hashed_password`, so the hash never leaves the API. Registration always
+  creates the role `user`.
+- **Emails are normalized to lowercase** before they are stored or looked up.
+- **Duplicate emails are caught by the database constraint.** The service
+  catches `IntegrityError` and raises its own error, and the endpoint maps it to
+  409. There is no check-then-insert race.
+- **Business logic lives in `services/`.** The service knows nothing about HTTP.
+  Endpoints translate service errors into status codes.
+- **OAuth2 password flow with form login.** Login reads a form (`username` is the
+  email), so the Authorize button in Swagger UI works.
+- **No token revocation yet.** A token stays valid until it expires. The short
+  lifetime limits the damage. Refresh tokens or a deny list can be added if
+  needed.
