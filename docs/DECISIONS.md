@@ -98,3 +98,35 @@
 - **No token revocation yet.** A token stays valid until it expires. The short
   lifetime limits the damage. Refresh tokens or a deny list can be added if
   needed.
+
+## Step 5: Events
+
+- **Reads are public, writes are admin-only.** The `GET` endpoints need no
+  token. `POST`, `PATCH` and `DELETE` use `dependencies=[Depends(require_admin)]`,
+  so the check lives in one place and runs before the handler. A normal user
+  gets 403 even for an event id that does not exist, so ids cannot be probed.
+- **Separate schemas for create, update and read.** On creation the server sets
+  `available_tickets` equal to `total_tickets`. `total_tickets` cannot be
+  edited, because changing capacity interacts with tickets already sold.
+- **PATCH only touches fields the client sent.** `exclude_unset` tells "not
+  sent" apart from "sent as null". Null is rejected for required fields and
+  allowed for `description`.
+- **Events with bookings cannot be deleted.** The foreign key has no cascade.
+  The service turns the database error into its own exception and the endpoint
+  returns 409. A soft delete (a status column) is the likely next step.
+- **Pagination with `limit` and `offset`.** `limit` is capped at 100 so one
+  request cannot pull the whole table, and the response carries `total`.
+  Results are ordered by `(starts_at, id)`. The `id` tie-breaker keeps the
+  order deterministic, so rows are not duplicated or skipped between pages.
+  Known weakness: rows inserted between two page requests shift the offset.
+  Cursor pagination would fix that if it ever matters.
+- **One filter function for count and items.** `q`, `upcoming` and
+  `available_only` are applied by `_apply_filters` to both queries, so `total`
+  always matches the filtered result.
+- **Safe text search.** `q` is capped at 100 characters and matched with
+  `ILIKE`. The characters `%` and `_` are escaped so they are searched
+  literally instead of acting as wildcards.
+- **Filters are opt-in.** All defaults are off, so clients never get silently
+  filtered results.
+- **"Now" comes from the database** (`now()`), like every timestamp, so all API
+  instances share one clock.
