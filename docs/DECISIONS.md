@@ -130,3 +130,48 @@
   filtered results.
 - **"Now" comes from the database** (`now()`), like every timestamp, so all API
   instances share one clock.
+
+## Step 6: Bookings and overselling protection
+
+- **Check and decrement happen in one conditional UPDATE.** Reading the stock in
+  Python and writing it back is a race condition. In a deliberately naive
+  version, 12 parallel requests for 5 tickets created 12 bookings and left
+  `available_tickets` wrong, with no error. The real code runs
+  `UPDATE events SET available_tickets = available_tickets - n WHERE id = ? AND
+  available_tickets >= n AND starts_at > now()`. PostgreSQL locks the row, so a
+  waiting request re-checks the condition against the new value. The same test
+  now produces exactly 5 bookings and 7 rejections.
+- **Reserving tickets and creating the booking are one transaction.** If the
+  insert fails, the rollback gives the tickets back. Verified with an unknown
+  user id: the request failed and `available_tickets` stayed unchanged.
+- **Cancelling is guarded the same way.** The booking is switched to
+  `cancelled` by an UPDATE with `WHERE status = 'confirmed'`, and tickets are
+  returned only if that UPDATE changed a row. In a naive version, two parallel
+  cancels returned the tickets twice (10 available + 3 still booked = 13 tickets for a capacity
+  of 10). With 8 parallel cancels exactly one succeeds and the total stays 10.
+- **CHECK constraints are a second line of defense, not the fix.** The naive
+  versions passed them, because the corrupted values were still between 0 and
+  the capacity. The conditional UPDATE is what prevents the bug.
+- **After a failed UPDATE, the service asks why.** That query only chooses the
+  error: event not found (404), event already started (409) or not enough
+  tickets (409). It changes no data.
+- **The server decides price and owner.** `BookingCreate` has only `event_id`
+  and `quantity`. The price comes from the same UPDATE that reserves the
+  tickets, and the user id comes from the token.
+- **`total_price` is a snapshot.** Later price changes do not affect existing
+  bookings. Free events have price 0, so the code checks `price is None`, not
+  `not price`.
+- **Users only see their own bookings.** `GET /bookings` takes the user id from
+  the token and the URL has no user id, so a user cannot read someone else's
+  bookings by guessing ids. Cancelling another user's booking returns the same
+  404 as a missing booking, so ids cannot be probed.
+- **Bookings are cancelled, never deleted.** Cancelling is
+  `POST /bookings/{id}/cancel`. The row stays and its status changes. A
+  cancelled booking still appears in the user's list.
+- **Cancelling twice returns 409.** This is a deliberate choice for clearer
+  errors. An idempotent 200 would be easier for clients that retry.
+- **At most 10 tickets per booking.** A product rule that is easy to change.
+- **Known limitations.** There is no idempotency key, so a double click creates
+  two bookings and the user can cancel one. Bookings for the same event queue
+  on one row lock, which is fine at this scale. The concurrency tests were run
+  by hand and are the first candidates for automated tests.
