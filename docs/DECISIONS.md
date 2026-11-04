@@ -234,3 +234,27 @@
   Real secrets never go into the repository.
 - **Pip downloads are cached** by the hash of the requirements files, so most
   runs skip the downloads.
+
+## Step 9: Creating admins
+
+- **Admins are made with a command, not an endpoint.**
+  `python -m app.cli make-admin <email>` promotes a registered user, and
+  `remove-admin` takes the role away. Only someone with access to the server
+  can run it, so there is no HTTP route that could ever be abused to gain
+  admin rights.
+- **The user registers through the API first.** The command never handles
+  passwords, so a password never ends up in shell history or logs.
+- **The command reuses the service layer.** `set_role` in `services/user.py`
+  normalizes the email the same way login does, and the command only parses
+  arguments and prints the result. It exits with code 1 when the email is
+  unknown, so scripts can detect the failure.
+- **The database only accepts known roles.** A new migration adds
+  `ck_users_role_valid` (`role IN ('user', 'admin')`), like the status check on
+  bookings. A typo such as `'admn'` can no longer be stored by a script or by
+  hand.
+- **That migration was written by hand.** Alembic autogenerate does not detect
+  CHECK constraints. If an existing row has another role, the upgrade fails on
+  purpose, so nobody's permissions change silently.
+- **A role change applies at once.** The role is not stored in the token
+  (Step 4), and a test proves that an existing token gains and loses admin
+  rights right after the command runs.
