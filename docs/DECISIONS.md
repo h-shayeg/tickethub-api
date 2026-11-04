@@ -175,3 +175,42 @@
   two bookings and the user can cancel one. Bookings for the same event queue
   on one row lock, which is fine at this scale. The concurrency tests were run
   by hand and are the first candidates for automated tests.
+
+## Step 7: Automated tests
+
+- **Tests run against real PostgreSQL, not SQLite.** The important guarantees
+  of this project (row locks, CHECK constraints, conditional UPDATEs with
+  `RETURNING`, `now()`) only exist in PostgreSQL. A fake database would let the
+  tests pass while the real one fails.
+- **A separate test database.** Its URL comes from `TEST_DATABASE_URL`, or from
+  `DATABASE_URL` with `_test` added to the database name. The tests refuse to
+  run if the name does not end with `_test`, because every run drops that
+  database. A typo can never wipe development data.
+- **The schema is built by the real migrations.** Each run recreates the test
+  database and runs `alembic upgrade head`, so the migrations are tested too,
+  not only the models.
+- **Every test starts from empty tables.** After each test the tables are
+  truncated and ids restart from 1, so tests never depend on each other or on
+  their order.
+- **Mostly black-box HTTP tests.** Tests call the API with FastAPI's
+  `TestClient` and check status codes and JSON, the same contract a client
+  sees. Test data that the API cannot create on purpose (events in the past,
+  sold-out events, admin users) is inserted directly through the models.
+- **The manual checks from earlier steps are now automated.** Overselling,
+  double cancel, user enumeration on login, id probing, forged and expired
+  tokens, `%` and `_` in search, pagination without duplicates, the CHECK
+  constraints, and `/health/db` returning 503 when the database is down.
+- **Concurrency tests use real threads and separate sessions.** A barrier
+  releases all threads at the same moment, so they really compete for the same
+  row. Only plain ids cross into threads, because a SQLAlchemy session must
+  never be shared between threads. Unexpected exceptions are recorded instead
+  of being lost, so a failure shows its real cause.
+- **The concurrency tests were checked against the naive code.** With the old
+  read-then-write version of `create_booking`, the test reported 12 bookings
+  for 5 tickets. With the naive cancel, parallel cancels tried to return the
+  tickets more than once. With the real code both tests pass. A test that
+  cannot fail proves nothing.
+- **Test tools are not in the production image.** `requirements-dev.txt` adds
+  pytest and httpx on top of `requirements.txt`. The Dockerfile installs them
+  only when the `INSTALL_DEV` build argument is `true`, which
+  `docker-compose.yml` sets for local development.
