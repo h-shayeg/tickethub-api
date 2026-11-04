@@ -175,3 +175,86 @@
   two bookings and the user can cancel one. Bookings for the same event queue
   on one row lock, which is fine at this scale. The concurrency tests were run
   by hand and are the first candidates for automated tests.
+
+## Step 7: Automated tests
+
+- **Tests run against real PostgreSQL, not SQLite.** The important guarantees
+  of this project (row locks, CHECK constraints, conditional UPDATEs with
+  `RETURNING`, `now()`) only exist in PostgreSQL. A fake database would let the
+  tests pass while the real one fails.
+- **A separate test database.** Its URL comes from `TEST_DATABASE_URL`, or from
+  `DATABASE_URL` with `_test` added to the database name. The tests refuse to
+  run if the name does not end with `_test`, because every run drops that
+  database. A typo can never wipe development data.
+- **The schema is built by the real migrations.** Each run recreates the test
+  database and runs `alembic upgrade head`, so the migrations are tested too,
+  not only the models.
+- **Every test starts from empty tables.** After each test the tables are
+  truncated and ids restart from 1, so tests never depend on each other or on
+  their order.
+- **Mostly black-box HTTP tests.** Tests call the API with FastAPI's
+  `TestClient` and check status codes and JSON, the same contract a client
+  sees. Test data that the API cannot create on purpose (events in the past,
+  sold-out events, admin users) is inserted directly through the models.
+- **The manual checks from earlier steps are now automated.** Overselling,
+  double cancel, user enumeration on login, id probing, forged and expired
+  tokens, `%` and `_` in search, pagination without duplicates, the CHECK
+  constraints, and `/health/db` returning 503 when the database is down.
+- **Concurrency tests use real threads and separate sessions.** A barrier
+  releases all threads at the same moment, so they really compete for the same
+  row. Only plain ids cross into threads, because a SQLAlchemy session must
+  never be shared between threads. Unexpected exceptions are recorded instead
+  of being lost, so a failure shows its real cause.
+- **The concurrency tests were checked against the naive code.** With the old
+  read-then-write version of `create_booking`, the test reported 12 bookings
+  for 5 tickets. With the naive cancel, parallel cancels tried to return the
+  tickets more than once. With the real code both tests pass. A test that
+  cannot fail proves nothing.
+- **Test tools are not in the production image.** `requirements-dev.txt` adds
+  pytest and httpx on top of `requirements.txt`. The Dockerfile installs them
+  only when the `INSTALL_DEV` build argument is `true`, which
+  `docker-compose.yml` sets for local development.
+
+## Step 8: Continuous integration
+
+- **Every push to `main` and every pull request runs the checks on GitHub
+  Actions.** A change that breaks something is visible on the pull request
+  before it is merged.
+- **The tests use a real PostgreSQL 16 service container,** the same version
+  as `docker-compose.yml`. The job waits for its healthcheck before starting.
+- **Migrations are checked in both directions.** `alembic upgrade head`, then
+  `alembic check` (fails if a model was changed without a migration), then
+  `alembic downgrade base` and `upgrade head` again. A forgotten or broken
+  migration fails the build.
+- **The Docker images are built in CI.** Both the production image and the
+  development image (with the test tools) must build, so a broken Dockerfile
+  is caught even though the tests themselves run without Docker.
+- **CI has its own throwaway secrets.** The database password and
+  `SECRET_KEY` in the workflow are used only by the temporary CI database.
+  Real secrets never go into the repository.
+- **Pip downloads are cached** by the hash of the requirements files, so most
+  runs skip the downloads.
+
+## Step 9: Creating admins
+
+- **Admins are made with a command, not an endpoint.**
+  `python -m app.cli make-admin <email>` promotes a registered user, and
+  `remove-admin` takes the role away. Only someone with access to the server
+  can run it, so there is no HTTP route that could ever be abused to gain
+  admin rights.
+- **The user registers through the API first.** The command never handles
+  passwords, so a password never ends up in shell history or logs.
+- **The command reuses the service layer.** `set_role` in `services/user.py`
+  normalizes the email the same way login does, and the command only parses
+  arguments and prints the result. It exits with code 1 when the email is
+  unknown, so scripts can detect the failure.
+- **The database only accepts known roles.** A new migration adds
+  `ck_users_role_valid` (`role IN ('user', 'admin')`), like the status check on
+  bookings. A typo such as `'admn'` can no longer be stored by a script or by
+  hand.
+- **That migration was written by hand.** Alembic autogenerate does not detect
+  CHECK constraints. If an existing row has another role, the upgrade fails on
+  purpose, so nobody's permissions change silently.
+- **A role change applies at once.** The role is not stored in the token
+  (Step 4), and a test proves that an existing token gains and loses admin
+  rights right after the command runs.
