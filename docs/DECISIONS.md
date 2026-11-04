@@ -214,3 +214,23 @@
   pytest and httpx on top of `requirements.txt`. The Dockerfile installs them
   only when the `INSTALL_DEV` build argument is `true`, which
   `docker-compose.yml` sets for local development.
+
+## Step 8: Continuous integration
+
+- **Every push to `main` and every pull request runs the checks on GitHub
+  Actions.** A change that breaks something is visible on the pull request
+  before it is merged.
+- **The tests use a real PostgreSQL 16 service container,** the same version
+  as `docker-compose.yml`. The job waits for its healthcheck before starting.
+- **Migrations are checked in both directions.** `alembic upgrade head`, then
+  `alembic check` (fails if a model was changed without a migration), then
+  `alembic downgrade base` and `upgrade head` again. A forgotten or broken
+  migration fails the build.
+- **The Docker images are built in CI.** Both the production image and the
+  development image (with the test tools) must build, so a broken Dockerfile
+  is caught even though the tests themselves run without Docker.
+- **CI has its own throwaway secrets.** The database password and
+  `SECRET_KEY` in the workflow are used only by the temporary CI database.
+  Real secrets never go into the repository.
+- **Pip downloads are cached** by the hash of the requirements files, so most
+  runs skip the downloads.
